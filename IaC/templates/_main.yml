@@ -1,0 +1,192 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "Template for CICD Workflow-Demo"
+
+Parameters:
+  environmentParameter:
+    Type: String
+    AllowedValues: 
+      - dev
+      - test
+      - prod
+  uidParameter:
+    Type: String
+    Description: "Enter three lowercase characters to be used as a uid for resources in this stack, starting with 'u'.  Example 'uaa'"
+    AllowedPattern: "u[a-z]{2}"
+    ConstraintDescription: "Enter three lowercase characters to be used as a uid for resources in this stack, starting with 'u'.  Example 'uaa'.  This uid is used to prevent naming conflicts for AWS resources that must be unique globally (e.g. S3 buckets), or at the account level (e.g. ELB)"
+
+Mappings:
+  config:
+    dev:
+      "cidrBlock": "10.190."
+      "keyName": "IaC-Dev"
+    test:
+      "cidrBlock": "10.191."
+      "keyName": "IaC-Test"
+    prod:
+      "cidrBlock": "10.192."
+      "keyName": "IaC-Prod"
+
+Resources:
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Join ['', [!FindInMap [config, !Ref environmentParameter, cidrBlock], 0.0/16]]
+      EnableDnsSupport: 'true'
+      EnableDnsHostnames: 'true'
+      Tags: 
+        - Key: Name
+          Value: !Join ['-', [!Ref environmentParameter, !Ref uidParameter]]
+  PublicSubnet0:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !Join ['',[!FindInMap [config, !Ref environmentParameter, cidrBlock], 0.0/24]]
+      AvailabilityZone: !Select [0, !GetAZs {Ref: "AWS::Region"}]
+      Tags: 
+        - Key: Name
+          Value: !Join ['-', [!Ref environmentParameter, !Select [0, !GetAZs { Ref: "AWS::Region" }], 'public', !Ref uidParameter]]
+  PrivateSubnet0:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !Join ['',[!FindInMap [config, !Ref environmentParameter, cidrBlock], 1.0/24]]
+      AvailabilityZone: !Select [0, !GetAZs {Ref: "AWS::Region"}]
+      Tags: 
+        - Key: Name
+          Value: !Join ['-', [!Ref environmentParameter, !Select [0, !GetAZs { Ref: "AWS::Region" }], 'private', !Ref uidParameter]]
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties: 
+      Tags:
+        - Key: Name
+          Value: !Join ['-', [!Ref environmentParameter, InternetGateway, !Ref uidParameter]]
+  VPCGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    DependsOn: InternetGateway
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref InternetGateway
+  NatGateway0EIP:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+  NatGateway0:
+    DependsOn: VPCGatewayAttachment
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NatGateway0EIP.AllocationId
+      SubnetId: !Ref PublicSubnet0
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Join ['-', [!Ref environmentParameter, PublicRouteTable, !Ref uidParameter]]
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: VPCGatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+  PublicSubnet0RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet0
+      RouteTableId: !Ref PublicRouteTable
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Join ['-', [!Ref environmentParameter, PrivateRouteTable, !Ref uidParameter]]
+  PrivateRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway0
+  PrivateSubnet0RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnet0
+      RouteTableId: !Ref PrivateRouteTable
+  PublicSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: 'PublicSecurityGroup'
+      VpcId: !Ref VPC
+  Ingress1:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref PublicSecurityGroup
+      IpProtocol: -1
+      CidrIp: 0.0.0.0/0
+  Egress1:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      GroupId: !Ref PublicSecurityGroup
+      IpProtocol: -1
+      CidrIp: 0.0.0.0/0
+  WebServer:
+    Type: AWS::EC2::Instance
+    Properties: 
+      DisableApiTermination: 'false'
+      InstanceInitiatedShutdownBehavior: 'stop'
+      ImageId: ami-b4b719d4
+      InstanceType: t2.small
+      KeyName: !FindInMap [config, !Ref environmentParameter, keyName]
+      Monitoring: 'false'
+      Tags:
+        - Key: Name
+          Value: !Join ['-', [!Ref environmentParameter, WebServer, !Ref uidParameter]]
+      NetworkInterfaces:
+        - DeleteOnTermination: 'true'
+          Description: 'Primary network interface'
+          AssociatePublicIpAddress: 'true'
+          DeviceIndex: 0
+          SubnetId: !Ref PublicSubnet0
+          GroupSet:
+            - !GetAtt VPC.DefaultSecurityGroup
+            - !Ref PublicSecurityGroup
+  WebServerEIP:
+    Type: AWS::EC2::EIP
+    Properties:
+      InstanceId: !Ref WebServer
+      Domain: 'vpc'
+  DatabaseServer:
+    Type: AWS::EC2::Instance
+    Properties: 
+      DisableApiTermination: 'false'
+      InstanceInitiatedShutdownBehavior: 'stop'
+      ImageId: ami-b4b719d4
+      InstanceType: t2.small
+      KeyName: !FindInMap [config, !Ref environmentParameter, keyName]
+      Monitoring: 'false'
+      Tags:
+        - Key: Name
+          Value: !Join ['-', [!Ref environmentParameter, DatabaseServer, !Ref uidParameter]]
+      NetworkInterfaces:
+        - DeleteOnTermination: 'true'
+          Description: 'Primary network interface'
+          AssociatePublicIpAddress: 'false'
+          DeviceIndex: 0
+          SubnetId: !Ref PrivateSubnet0
+          GroupSet:
+            - !GetAtt VPC.DefaultSecurityGroup
+
+Outputs:
+  vpcID:
+    Description: 'The VPC ID'
+    Value: !Ref VPC
+    Export:
+      Name: !Join ['-', [!Ref environmentParameter, vpcID]]
+ 
+
+
+
+
+
+
