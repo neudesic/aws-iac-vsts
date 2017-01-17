@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: "2010-09-09"
-Description: "Author: Mahesh Pesani::Template for CICD Workflow"
+Description: "Author: Mahesh Pesani::Template for CICD Workflow-Demo"
 
 Parameters:
   environmentParameter:
